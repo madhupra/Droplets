@@ -4,7 +4,7 @@ as the size reference, and write an annotated image plus a table of labels.
 
 Usage:
     python droplets.py image.tif [--min-radius 10] [--max-radius 80]
-                       [--tolerance 0.2] [--label N] [--outdir output]
+                       [--tolerance 0.1] [--label N] [--outdir output]
 """
 import argparse
 import os
@@ -100,8 +100,8 @@ def main():
     p.add_argument("image", help="path to a TIFF image")
     p.add_argument("--min-radius", type=int, default=10)
     p.add_argument("--max-radius", type=int, default=80)
-    p.add_argument("--tolerance", type=float, default=0.2,
-                   help="relative radius tolerance around the selected circle (default 0.2)")
+    p.add_argument("--tolerance", type=float, default=0.1,
+                   help="relative radius tolerance around the selected circle (default 0.1)")
     p.add_argument("--label", type=int, help="skip the prompt and use this label")
     p.add_argument("--outdir", default="output")
     args = p.parse_args()
