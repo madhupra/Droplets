@@ -39,6 +39,7 @@ def read_image(path):
 def detect_circles(gray, min_r, max_r, max_circles=200):
     """Step 2: find circular objects with a Hough transform.
 
+    Circles cut off by the image border are discarded.
     Returns a list of (cx, cy, r) sorted top-to-bottom, left-to-right.
     """
     smooth = filters.gaussian(gray, sigma=2)
@@ -50,7 +51,11 @@ def detect_circles(gray, min_r, max_r, max_circles=200):
         min_xdistance=min_r, min_ydistance=min_r,
         threshold=0.5 * hspaces.max(), total_num_peaks=max_circles,
     )
-    circles = sorted(zip(cx, cy, r), key=lambda c: (c[1] // max(min_r, 1), c[0]))
+    h, w = gray.shape
+    # Keep only complete circles: the whole disk must lie inside the image.
+    complete = [(x, y, rad) for x, y, rad in zip(cx, cy, r)
+                if x - rad >= 0 and y - rad >= 0 and x + rad < w and y + rad < h]
+    circles = sorted(complete, key=lambda c: (c[1] // max(min_r, 1), c[0]))
     return [(int(x), int(y), int(rad)) for x, y, rad in circles]
 
 
