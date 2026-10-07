@@ -36,6 +36,23 @@ def read_image(path):
     return (img - img.min()) / rng if rng else np.zeros_like(img)
 
 
+def refine_radius(gray, cx, cy, r, span=12):
+    """Snap a Hough radius to the centre of the dark ring around the droplet.
+
+    Hough peaks can land on either edge of the ring, which makes equally sized
+    droplets look different; the ring's darkest radius is consistent.
+    """
+    h, w = gray.shape
+    y0, y1 = max(cy - r - span, 0), min(cy + r + span + 1, h)
+    x0, x1 = max(cx - r - span, 0), min(cx + r + span + 1, w)
+    yy, xx = np.mgrid[y0:y1, x0:x1]
+    dist = np.hypot(xx - cx, yy - cy)
+    patch = gray[y0:y1, x0:x1]
+    ks = np.arange(r - span, r + span + 1)
+    prof = [patch[(dist >= k - 0.5) & (dist < k + 0.5)].mean() for k in ks]
+    return int(ks[int(np.argmin(prof))])
+
+
 def detect_circles(gray, min_r, max_r, max_circles=200):
     """Step 2: find circular objects with a Hough transform.
 
@@ -53,8 +70,11 @@ def detect_circles(gray, min_r, max_r, max_circles=200):
     )
     h, w = gray.shape
     # Keep only complete circles: the whole disk must lie inside the image.
-    complete = [(x, y, rad) for x, y, rad in zip(cx, cy, r)
-                if x - rad >= 0 and y - rad >= 0 and x + rad < w and y + rad < h]
+    complete = []
+    for x, y, rad in zip(cx, cy, r):
+        rad = refine_radius(gray, int(x), int(y), int(rad))
+        if x - rad >= 0 and y - rad >= 0 and x + rad < w and y + rad < h:
+            complete.append((x, y, rad))
     circles = sorted(complete, key=lambda c: (c[1] // max(min_r, 1), c[0]))
     return [(int(x), int(y), int(rad)) for x, y, rad in circles]
 
