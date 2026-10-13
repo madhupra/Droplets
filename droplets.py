@@ -182,75 +182,75 @@ def enhance_fitc(image_path, out_path="fitc_enhanced.png", low_pct=1, high_pct=9
 
 
 def make_toggle_viewer(brightfield_path, fitc_path, out_html="viewer.html",
-                       fitc_kwargs=None, overlay_floor_pct=97):
-    """Write a standalone HTML viewer that overlays the FITC image on the
-    brightfield image.
+                       fitc_kwargs=None, overlay_floor_pct=97,
+                       bf_brightness=0.55, save_pngs=True):
+    """Write a standalone HTML viewer that switches between four precomputed views:
+    brightfield, the original FITC image, an overlay using the original FITC, and
+    an overlay using a background-subtracted (signal only) FITC.
 
-    Buttons (or the keys 1-4 and space) switch between Brightfield, the original
-    FITC image, an overlay using the original FITC, and an overlay using a copy
-    of the FITC with everything below the `overlay_floor_pct` percentile removed
-    (signal only). Sliders set the FITC gain and brightfield brightness. Both images must
-    cover the same field of view and have the same shape.
+    Buttons or the keys 1-4 switch views; space flips brightfield/FITC. The views
+    are rendered here in Python, so the page needs no canvas or pixel access and
+    works in sandboxed previews. With `save_pngs`, each view is also written next
+    to the HTML as <name>_<view>.png (the page itself embeds smaller
+    JPEG copies). Both images must have the same shape.
     """
     import base64
     import io
 
-    def to_b64(rgb):
-        buf = io.BytesIO()
-        plt.imsave(buf, rgb, format="png")
-        return base64.b64encode(buf.getvalue()).decode()
-
     bf = np.squeeze(tifffile.imread(brightfield_path)).astype(float)
     lo, hi = np.percentile(bf, [0.5, 99.5])
     bf = np.clip((bf - lo) / max(hi - lo, 1e-9), 0, 1)
-    tmp = os.path.splitext(out_html)[0] + "_fitc.png"
+    tmp = os.path.splitext(out_html)[0] + "_tmp.png"
     fl = enhance_fitc(fitc_path, tmp, **(fitc_kwargs or {}))
     kw = dict(fitc_kwargs or {})
-    kw.update(low_pct=overlay_floor_pct)  # background-subtracted copy for the overlay
-    fl_ov = enhance_fitc(fitc_path, tmp, **kw)
+    kw.update(low_pct=overlay_floor_pct)  # background-subtracted copy
+    fl_sig = enhance_fitc(fitc_path, tmp, **kw)
     os.remove(tmp)
     if bf.shape != fl.shape[:2]:
         raise ValueError(f"Image shapes differ: {bf.shape} vs {fl.shape[:2]}")
-    bf_b64 = to_b64(np.dstack([bf] * 3))
-    fl_b64 = to_b64(fl)
-    fl_ov_b64 = to_b64(fl_ov)
+    bf3 = np.dstack([bf] * 3)
+    views = [
+        ("brightfield", "1 Brightfield", bf3),
+        ("fitc", "2 FITC (original)", fl),
+        ("overlay_original", "3 Overlay: original FITC",
+         np.clip(bf3 * bf_brightness + fl, 0, 1)),
+        ("overlay_signal", "4 Overlay: FITC signal only",
+         np.clip(bf3 * bf_brightness + fl_sig, 0, 1)),
+    ]
 
-    html = """<!doctype html><meta charset="utf-8"><title>Droplet viewer</title>
+    base = os.path.splitext(out_html)[0]
+    srcs = []
+    for name, _, rgb in views:
+        buf = io.BytesIO()
+        plt.imsave(buf, rgb, format="jpg", pil_kwargs={"quality": 90})
+        srcs.append("data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode())
+        if save_pngs:
+            plt.imsave(f"{base}_{name}.png", rgb)
+
+    buttons = "".join(f'<button id="b{i}" onclick="show({i})">{label}</button>'
+                      for i, (_, label, _) in enumerate(views))
+    imgs = "".join(f'<img id="v{i}" src="{src}" style="display:none">'
+                   for i, src in enumerate(srcs))
+    html = f"""<!doctype html><meta charset="utf-8"><title>Droplet viewer</title>
 <style>
-body{background:#111;color:#eee;font:14px sans-serif;margin:12px}
-button{padding:6px 14px;margin-right:6px;background:#333;color:#eee;border:1px solid #666;cursor:pointer}
-button.on{background:#2a7;border-color:#2a7}
-canvas{width:min(95vw,90vh);display:block;margin-top:10px}
+body{{background:#111;color:#eee;font:14px sans-serif;margin:12px}}
+button{{padding:6px 14px;margin-right:6px;background:#333;color:#eee;border:1px solid #666;cursor:pointer}}
+button.on{{background:#2a7;border-color:#2a7}}
+img{{width:min(95vw,90vh);margin-top:10px}}
 </style>
-<div><button id="b1">1 Brightfield</button><button id="b2">2 FITC (original)</button>
-<button id="b3">3 Overlay: original FITC</button><button id="b4">4 Overlay: FITC signal only</button></div>
-<div style="margin-top:8px">FITC gain <input id="op" type="range" min="0" max="1" step="0.05" value="1">
-&nbsp; Brightfield brightness <input id="bk" type="range" min="0.1" max="1" step="0.05" value="0.55">
-&nbsp; (keys 1-4; space = toggle brightfield/FITC)</div>
-<canvas id="c"></canvas>
+<div>{buttons} &nbsp; (keys 1-4; space = toggle brightfield/FITC)</div>
+<div>{imgs}</div>
 <script>
-const load=src=>new Promise(r=>{const i=new Image();i.onload=()=>r(i);i.src=src;});
-const c=document.getElementById('c'),ctx=c.getContext('2d'),op=document.getElementById('op'),bk=document.getElementById('bk'),NB=4;
-let B,F,G,mode=4;
-function pix(img){c.width=img.width;c.height=img.height;ctx.drawImage(img,0,0);
- return ctx.getImageData(0,0,img.width,img.height);}
-function show(m){mode=m;
- for(let i=1;i<=NB;i++)document.getElementById('b'+i).classList.toggle('on',i==m);
- if(!B)return;
- const out=ctx.createImageData(B.width,B.height),o=out.data,b=B.data,f=F.data,h=G.data,g=+op.value,k=+bk.value;
- for(let i=0;i<o.length;i+=4){
-  if(m==1){o[i]=b[i];o[i+1]=b[i+1];o[i+2]=b[i+2];}
-  else if(m==2){o[i]=f[i];o[i+1]=f[i+1];o[i+2]=f[i+2];}
-  else{const s=m==3?f:h;o[i]=b[i]*k;o[i+1]=Math.min(255,b[i+1]*k+s[i+1]*g);o[i+2]=b[i+2]*k;}
-  o[i+3]=255;}
- ctx.putImageData(out,0,0);}
-Promise.all([load("data:image/png;base64,__BF__"),load("data:image/png;base64,__FL__"),load("data:image/png;base64,__OV__")]).then(([bi,fi,oi])=>{
- B=pix(bi);F=pix(fi);G=pix(oi);show(4);});
-for(let i=1;i<=NB;i++)document.getElementById('b'+i).onclick=()=>show(i);
-op.oninput=bk.oninput=()=>show(mode<3?4:mode);
-document.onkeydown=e=>{if(e.key>='1'&&e.key<='4')show(+e.key);
- if(e.key==' '){e.preventDefault();show(mode==1?2:1);}};
-</script>""".replace("__BF__", bf_b64).replace("__FL__", fl_b64).replace("__OV__", fl_ov_b64)
+var mode=3;
+function show(m){{mode=m;
+ for(var i=0;i<4;i++){{
+  document.getElementById('v'+i).style.display=(i==m)?'block':'none';
+  document.getElementById('b'+i).className=(i==m)?'on':'';}}}}
+document.onkeydown=function(e){{
+ if(e.key>='1'&&e.key<='4')show(+e.key-1);
+ if(e.key==' '){{e.preventDefault();show(mode==0?1:0);}}}};
+show(3);
+</script>"""
     with open(out_html, "w") as f:
         f.write(html)
     return out_html
