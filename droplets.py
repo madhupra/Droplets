@@ -165,14 +165,18 @@ def analyze_droplets(image_path, min_radius=10, max_radius=80, tolerance=0.1,
     }
 
 
-def enhance_fitc(image_path, out_path="fitc_enhanced.png", low_pct=1, high_pct=99.0,
-                 gamma=0.5):
+def enhance_fitc(image_path, out_path="fitc_enhanced.png", low_pct=25, high_pct=99.5,
+                 gamma=0.8, smooth=0.7):
     """Contrast-stretch a single-channel FITC TIFF and save it as a green image.
 
-    Intensities are clipped to the [low_pct, high_pct] percentiles, rescaled to
-    0-1, gamma-adjusted, and mapped to the green channel. Returns the RGB array.
+    The image is lightly smoothed (`smooth` = Gaussian sigma in px, 0 to disable),
+    clipped to the [low_pct, high_pct] percentiles (the low value sits at the
+    background so it renders black), rescaled to 0-1, gamma-adjusted, and mapped
+    to the green channel. Returns the RGB array.
     """
     img = np.squeeze(tifffile.imread(image_path)).astype(float)
+    if smooth:
+        img = filters.gaussian(img, sigma=smooth, preserve_range=True)
     lo, hi = np.percentile(img, [low_pct, high_pct])
     img = np.clip((img - lo) / max(hi - lo, 1e-9), 0, 1) ** gamma
     rgb = np.zeros(img.shape + (3,))
