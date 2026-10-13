@@ -165,7 +165,7 @@ def analyze_droplets(image_path, min_radius=10, max_radius=80, tolerance=0.1,
     }
 
 
-def enhance_fitc(image_path, out_path="fitc_enhanced.png", low_pct=25, high_pct=99.5,
+def enhance_fitc(image_path, out_path="fitc_enhanced.png", low_pct=50, high_pct=99.8,
                  gamma=0.8, smooth=0.7):
     """Contrast-stretch a single-channel FITC TIFF and save it as a green image.
 
