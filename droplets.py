@@ -2,13 +2,16 @@
 """Detect circular objects (droplets) in a TIFF image, let the user pick one
 as the size reference, and write an annotated image plus a table of labels.
 
-Usage:
+Use from other code:
+    from droplets import analyze_droplets
+    result = analyze_droplets("image.tif", min_radius=45, max_radius=75)
+
+Use from the command line:
     python droplets.py image.tif [--min-radius 10] [--max-radius 80]
                        [--tolerance 0.1] [--label N] [--outdir output]
 """
 import argparse
 import os
-import sys
 
 import matplotlib
 import numpy as np
@@ -20,103 +23,146 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 
-def read_image(path):
-    """Step 1: read a TIFF and return a 2-D float grayscale array in [0, 1]."""
-    img = tifffile.imread(path)
-    img = np.squeeze(img)
-    if img.ndim == 3:
-        if img.shape[0] in (3, 4) and img.shape[-1] not in (3, 4):
-            img = np.moveaxis(img, 0, -1)  # channels-first -> channels-last
-        if img.shape[-1] in (3, 4):
-            img = color.rgb2gray(img[..., :3])
-        else:
-            img = img[0]  # multi-page stack: use first frame
-    img = img.astype(float)
-    rng = np.ptp(img)
-    return (img - img.min()) / rng if rng else np.zeros_like(img)
+def analyze_droplets(image_path, min_radius=10, max_radius=80, tolerance=0.1,
+                     label=None, outdir="output", max_circles=200, verbose=True):
+    """Run the full droplet workflow on one TIFF image.
 
+    1. Read the TIFF.
+    2. Detect complete circular objects and label them 1..N.
+    3. Ask the user for a reference label (skipped if `label` is given).
+    4. Save an image outlining every circle whose radius is within `tolerance`
+       of the reference, with its number inside.
+    5. Build and save a table of those labels.
 
-def refine_radius(gray, cx, cy, r, span=12):
-    """Snap a Hough radius to the centre of the dark ring around the droplet.
-
-    Hough peaks can land on either edge of the ring, which makes equally sized
-    droplets look different; the ring's darkest radius is consistent.
+    Returns a dict with keys: table (DataFrame), circles (all detected
+    (cx, cy, r) tuples), label_mask (int image, 0 = background, k = label k for
+    the selected circles), reference_label, reference_radius, overview_path,
+    selected_path, table_path.
+    Raises ValueError if no circles are found or `label` is out of range.
     """
-    h, w = gray.shape
-    y0, y1 = max(cy - r - span, 0), min(cy + r + span + 1, h)
-    x0, x1 = max(cx - r - span, 0), min(cx + r + span + 1, w)
-    yy, xx = np.mgrid[y0:y1, x0:x1]
-    dist = np.hypot(xx - cx, yy - cy)
-    patch = gray[y0:y1, x0:x1]
-    ks = np.arange(r - span, r + span + 1)
-    prof = [patch[(dist >= k - 0.5) & (dist < k + 0.5)].mean() for k in ks]
-    return int(ks[int(np.argmin(prof))])
 
+    def read_image(path):
+        img = np.squeeze(tifffile.imread(path))
+        if img.ndim == 3:
+            if img.shape[0] in (3, 4) and img.shape[-1] not in (3, 4):
+                img = np.moveaxis(img, 0, -1)  # channels-first -> channels-last
+            if img.shape[-1] in (3, 4):
+                img = color.rgb2gray(img[..., :3])
+            else:
+                img = img[0]  # multi-page stack: use first frame
+        img = img.astype(float)
+        rng = np.ptp(img)
+        return (img - img.min()) / rng if rng else np.zeros_like(img)
 
-def detect_circles(gray, min_r, max_r, max_circles=200):
-    """Step 2: find circular objects with a Hough transform.
+    def refine_radius(gray, cx, cy, r, span=12):
+        # Hough peaks can land on either edge of the dark ring around a droplet,
+        # which makes equally sized droplets look different; snap to the ring's
+        # darkest radius, which is consistent.
+        h, w = gray.shape
+        y0, y1 = max(cy - r - span, 0), min(cy + r + span + 1, h)
+        x0, x1 = max(cx - r - span, 0), min(cx + r + span + 1, w)
+        yy, xx = np.mgrid[y0:y1, x0:x1]
+        dist = np.hypot(xx - cx, yy - cy)
+        patch = gray[y0:y1, x0:x1]
+        ks = np.arange(r - span, r + span + 1)
+        prof = [patch[(dist >= k - 0.5) & (dist < k + 0.5)].mean() for k in ks]
+        return int(ks[int(np.argmin(prof))])
 
-    Circles cut off by the image border are discarded.
-    Returns a list of (cx, cy, r) sorted top-to-bottom, left-to-right.
-    """
-    smooth = filters.gaussian(gray, sigma=2)
-    edges = feature.canny(smooth, sigma=2)
-    radii = np.arange(min_r, max_r + 1)
-    hspaces = transform.hough_circle(edges, radii)
-    _, cx, cy, r = transform.hough_circle_peaks(
-        hspaces, radii,
-        min_xdistance=min_r, min_ydistance=min_r,
-        threshold=0.5 * hspaces.max(), total_num_peaks=max_circles,
-    )
-    h, w = gray.shape
-    # Keep only complete circles: the whole disk must lie inside the image.
-    complete = []
-    for x, y, rad in zip(cx, cy, r):
-        rad = refine_radius(gray, int(x), int(y), int(rad))
-        if x - rad >= 0 and y - rad >= 0 and x + rad < w and y + rad < h:
-            complete.append((x, y, rad))
-    circles = sorted(complete, key=lambda c: (c[1] // max(min_r, 1), c[0]))
-    return [(int(x), int(y), int(rad)) for x, y, rad in circles]
+    def detect_circles(gray):
+        # Hough transform; circles cut off by the image border are discarded.
+        edges = feature.canny(filters.gaussian(gray, sigma=2), sigma=2)
+        radii = np.arange(min_radius, max_radius + 1)
+        hspaces = transform.hough_circle(edges, radii)
+        _, cx, cy, r = transform.hough_circle_peaks(
+            hspaces, radii,
+            min_xdistance=min_radius, min_ydistance=min_radius,
+            threshold=0.5 * hspaces.max(), total_num_peaks=max_circles,
+        )
+        h, w = gray.shape
+        complete = []
+        for x, y, rad in zip(cx, cy, r):
+            rad = refine_radius(gray, int(x), int(y), int(rad))
+            if x - rad >= 0 and y - rad >= 0 and x + rad < w and y + rad < h:
+                complete.append((int(x), int(y), int(rad)))
+        # Number top-to-bottom, left-to-right.
+        return sorted(complete, key=lambda c: (c[1] // max(min_radius, 1), c[0]))
 
+    def annotate(gray, circles, labels, path, title):
+        fig, ax = plt.subplots(figsize=(8, 8 * gray.shape[0] / gray.shape[1]))
+        ax.imshow(gray, cmap="gray")
+        for lab, (cx, cy, r) in zip(labels, circles):
+            ax.add_patch(plt.Circle((cx, cy), r, fill=False, color="lime", lw=1.5))
+            ax.text(cx, cy, str(lab), color="yellow", ha="center", va="center",
+                    fontsize=9, fontweight="bold")
+        ax.set_title(title)
+        ax.axis("off")
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
 
-def build_label_mask(shape, circles):
-    """Label image: each circle's pixels = its label (1..N); 0 = background."""
-    mask = np.zeros(shape, dtype=np.int32)
-    for i, (cx, cy, r) in enumerate(circles, start=1):
-        rr, cc = draw.disk((cy, cx), r, shape=shape)
-        mask[rr, cc] = i
-    return mask
+    def choose_label(n):
+        if label is not None:
+            if not 1 <= label <= n:
+                raise ValueError(f"label must be between 1 and {n}")
+            return label
+        while True:
+            try:
+                choice = int(input(f"Select a label (1-{n}) to use as the reference size: "))
+            except ValueError:
+                print("Please enter a whole number.")
+                continue
+            if 1 <= choice <= n:
+                return choice
+            print(f"Label must be between 1 and {n}.")
 
+    os.makedirs(outdir, exist_ok=True)
 
-def annotate(gray, circles, labels, path, title):
-    """Draw a mask outline around each circle with its label inside."""
-    fig, ax = plt.subplots(figsize=(8, 8 * gray.shape[0] / gray.shape[1]))
-    ax.imshow(gray, cmap="gray")
-    for label, (cx, cy, r) in zip(labels, circles):
-        ax.add_patch(plt.Circle((cx, cy), r, fill=False, color="lime", lw=1.5))
-        ax.text(cx, cy, str(label), color="yellow", ha="center", va="center",
-                fontsize=9, fontweight="bold")
-    ax.set_title(title)
-    ax.axis("off")
-    fig.savefig(path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
+    gray = read_image(image_path)                                        # 1
+    circles = detect_circles(gray)                                       # 2
+    if not circles:
+        raise ValueError("No circular objects found; try adjusting min_radius/max_radius.")
+    overview_path = os.path.join(outdir, "all_labeled.png")
+    annotate(gray, circles, range(1, len(circles) + 1), overview_path,
+             f"{len(circles)} circles detected")
+    if verbose:
+        print(f"Detected {len(circles)} circular objects. Overview saved to {overview_path}")
 
+    chosen = choose_label(len(circles))                                  # 3
+    ref_r = circles[chosen - 1][2]
+    lo, hi = ref_r * (1 - tolerance), ref_r * (1 + tolerance)
+    keep = [(i, c) for i, c in enumerate(circles, start=1) if lo <= c[2] <= hi]
+    labels = [i for i, _ in keep]
+    sel = [c for _, c in keep]
 
-def choose_label(n, preset=None):
-    """Step 3: ask the user which label to use as the reference."""
-    if preset is not None:
-        if not 1 <= preset <= n:
-            sys.exit(f"--label must be between 1 and {n}")
-        return preset
-    while True:
-        try:
-            choice = int(input(f"Select a label (1-{n}) to use as the reference size: "))
-        except ValueError:
-            print("Please enter a whole number.")
-            continue
-        if 1 <= choice <= n:
-            return choice
-        print(f"Label must be between 1 and {n}.")
+    selected_path = os.path.join(outdir, "selected.png")                 # 4
+    annotate(gray, sel, labels, selected_path,
+             f"Circles matching label {chosen} (radius {ref_r}px ±{tolerance:.0%})")
+
+    label_mask = np.zeros(gray.shape, dtype=np.int32)
+    for lab, (cx, cy, r) in zip(labels, sel):
+        rr, cc = draw.disk((cy, cx), r, shape=gray.shape)
+        label_mask[rr, cc] = lab
+
+    table = pd.DataFrame({                                               # 5
+        "label": labels,
+        "center_x": [c[0] for c in sel],
+        "center_y": [c[1] for c in sel],
+        "radius_px": [c[2] for c in sel],
+        "area_px": [int(np.pi * c[2] ** 2) for c in sel],
+    })
+    table_path = os.path.join(outdir, "labels.csv")
+    table.to_csv(table_path, index=False)
+
+    if verbose:
+        print(f"\nReference: label {chosen}, radius {ref_r}px\n")
+        print(table.to_string(index=False))
+        print(f"\nSaved {selected_path} and {table_path}")
+
+    return {
+        "table": table, "circles": circles, "label_mask": label_mask,
+        "reference_label": chosen, "reference_radius": ref_r,
+        "overview_path": overview_path, "selected_path": selected_path,
+        "table_path": table_path,
+    }
 
 
 def main():
@@ -129,45 +175,12 @@ def main():
                    help="relative radius tolerance around the selected circle (default 0.1)")
     p.add_argument("--label", type=int, help="skip the prompt and use this label")
     p.add_argument("--outdir", default="output")
-    args = p.parse_args()
-
-    os.makedirs(args.outdir, exist_ok=True)
-
-    gray = read_image(args.image)                                   # 1
-    circles = detect_circles(gray, args.min_radius, args.max_radius)  # 2
-    if not circles:
-        sys.exit("No circular objects found; try adjusting --min-radius/--max-radius.")
-    all_labels = list(range(1, len(circles) + 1))
-    overview = os.path.join(args.outdir, "all_labeled.png")
-    annotate(gray, circles, all_labels, overview, f"{len(circles)} circles detected")
-    print(f"Detected {len(circles)} circular objects. Overview saved to {overview}")
-
-    chosen = choose_label(len(circles), args.label)                  # 3
-    ref_r = circles[chosen - 1][2]
-    lo, hi = ref_r * (1 - args.tolerance), ref_r * (1 + args.tolerance)
-
-    # 4 & 5: annotated image and table are built from the same selection.
-    keep = [(i, c) for i, c in enumerate(circles, start=1) if lo <= c[2] <= hi]
-    labels = [i for i, _ in keep]
-    sel = [c for _, c in keep]
-
-    out_img = os.path.join(args.outdir, "selected.png")
-    annotate(gray, sel, labels, out_img,
-             f"Circles matching label {chosen} (radius {ref_r}px ±{args.tolerance:.0%})")
-
-    table = pd.DataFrame({
-        "label": labels,
-        "center_x": [c[0] for c in sel],
-        "center_y": [c[1] for c in sel],
-        "radius_px": [c[2] for c in sel],
-        "area_px": [int(np.pi * c[2] ** 2) for c in sel],
-    })
-    out_csv = os.path.join(args.outdir, "labels.csv")
-    table.to_csv(out_csv, index=False)
-
-    print(f"\nReference: label {chosen}, radius {ref_r}px\n")
-    print(table.to_string(index=False))
-    print(f"\nSaved {out_img} and {out_csv}")
+    a = p.parse_args()
+    try:
+        analyze_droplets(a.image, a.min_radius, a.max_radius, a.tolerance,
+                         a.label, a.outdir)
+    except ValueError as e:
+        raise SystemExit(str(e))
 
 
 if __name__ == "__main__":
