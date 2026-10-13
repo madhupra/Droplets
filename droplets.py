@@ -165,8 +165,8 @@ def analyze_droplets(image_path, min_radius=10, max_radius=80, tolerance=0.1,
     }
 
 
-def enhance_fitc(image_path, out_path="fitc_enhanced.png", low_pct=1, high_pct=99.8,
-                 gamma=0.6):
+def enhance_fitc(image_path, out_path="fitc_enhanced.png", low_pct=1, high_pct=99.0,
+                 gamma=0.5):
     """Contrast-stretch a single-channel FITC TIFF and save it as a green image.
 
     Intensities are clipped to the [low_pct, high_pct] percentiles, rescaled to
@@ -179,6 +179,79 @@ def enhance_fitc(image_path, out_path="fitc_enhanced.png", low_pct=1, high_pct=9
     rgb[..., 1] = img
     plt.imsave(out_path, rgb)
     return rgb
+
+
+def make_toggle_viewer(brightfield_path, fitc_path, out_html="viewer.html",
+                       fitc_kwargs=None, overlay_floor_pct=97):
+    """Write a standalone HTML viewer that overlays the FITC image on the
+    brightfield image.
+
+    Buttons (or the keys 1/2/3 and space) switch between Brightfield, FITC and
+    Overlay; a slider sets the FITC gain in the overlay. The overlay uses a
+    copy of the FITC image with everything below the `overlay_floor_pct`
+    percentile removed, so background does not tint the brightfield. Both images must
+    cover the same field of view and have the same shape.
+    """
+    import base64
+    import io
+
+    def to_b64(rgb):
+        buf = io.BytesIO()
+        plt.imsave(buf, rgb, format="png")
+        return base64.b64encode(buf.getvalue()).decode()
+
+    bf = np.squeeze(tifffile.imread(brightfield_path)).astype(float)
+    lo, hi = np.percentile(bf, [0.5, 99.5])
+    bf = np.clip((bf - lo) / max(hi - lo, 1e-9), 0, 1)
+    tmp = os.path.splitext(out_html)[0] + "_fitc.png"
+    fl = enhance_fitc(fitc_path, tmp, **(fitc_kwargs or {}))
+    kw = dict(fitc_kwargs or {})
+    kw.update(low_pct=overlay_floor_pct)  # background-subtracted copy for the overlay
+    fl_ov = enhance_fitc(fitc_path, tmp, **kw)
+    os.remove(tmp)
+    if bf.shape != fl.shape[:2]:
+        raise ValueError(f"Image shapes differ: {bf.shape} vs {fl.shape[:2]}")
+    bf_b64 = to_b64(np.dstack([bf] * 3))
+    fl_b64 = to_b64(fl)
+    fl_ov_b64 = to_b64(fl_ov)
+
+    html = """<!doctype html><meta charset="utf-8"><title>Droplet viewer</title>
+<style>
+body{background:#111;color:#eee;font:14px sans-serif;margin:12px}
+button{padding:6px 14px;margin-right:6px;background:#333;color:#eee;border:1px solid #666;cursor:pointer}
+button.on{background:#2a7;border-color:#2a7}
+canvas{width:min(95vw,90vh);display:block;margin-top:10px}
+</style>
+<div><button id="b1">1 Brightfield</button><button id="b2">2 FITC</button>
+<button id="b3">3 Overlay</button> FITC gain
+<input id="op" type="range" min="0" max="1" step="0.05" value="1"> (space = toggle brightfield/FITC)</div>
+<canvas id="c"></canvas>
+<script>
+const load=src=>new Promise(r=>{const i=new Image();i.onload=()=>r(i);i.src=src;});
+const c=document.getElementById('c'),ctx=c.getContext('2d'),op=document.getElementById('op');
+let B,F,G,mode=3;
+function pix(img){c.width=img.width;c.height=img.height;ctx.drawImage(img,0,0);
+ return ctx.getImageData(0,0,img.width,img.height);}
+function show(m){mode=m;
+ for(const i of [1,2,3])document.getElementById('b'+i).classList.toggle('on',i==m);
+ if(!B)return;
+ const out=ctx.createImageData(B.width,B.height),o=out.data,b=B.data,f=F.data,h=G.data,g=+op.value;
+ for(let i=0;i<o.length;i+=4){
+  if(m==1){o[i]=b[i];o[i+1]=b[i+1];o[i+2]=b[i+2];}
+  else if(m==2){o[i]=f[i];o[i+1]=f[i+1];o[i+2]=f[i+2];}
+  else{const k=0.55;o[i]=b[i]*k;o[i+1]=Math.min(255,b[i+1]*k+h[i+1]*g);o[i+2]=b[i+2]*k;}
+  o[i+3]=255;}
+ ctx.putImageData(out,0,0);}
+Promise.all([load("data:image/png;base64,__BF__"),load("data:image/png;base64,__FL__"),load("data:image/png;base64,__OV__")]).then(([bi,fi,oi])=>{
+ B=pix(bi);F=pix(fi);G=pix(oi);show(3);});
+for(const i of [1,2,3])document.getElementById('b'+i).onclick=()=>show(i);
+op.oninput=()=>show(3);
+document.onkeydown=e=>{if(e.key>='1'&&e.key<='3')show(+e.key);
+ if(e.key==' '){e.preventDefault();show(mode==1?2:1);}};
+</script>""".replace("__BF__", bf_b64).replace("__FL__", fl_b64).replace("__OV__", fl_ov_b64)
+    with open(out_html, "w") as f:
+        f.write(html)
+    return out_html
 
 
 def main():
