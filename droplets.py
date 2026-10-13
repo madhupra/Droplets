@@ -165,8 +165,8 @@ def analyze_droplets(image_path, min_radius=10, max_radius=80, tolerance=0.1,
     }
 
 
-def enhance_fitc(image_path, out_path="fitc_enhanced.png", low_pct=50, high_pct=99.8,
-                 gamma=0.8, smooth=0.7):
+def enhance_fitc(image_path, out_path="fitc_enhanced.png", low_pct=50, high_pct=99.5,
+                 gamma=0.5, smooth=0.7):
     """Contrast-stretch a single-channel FITC TIFF and save it as a green image.
 
     The image is lightly smoothed (`smooth` = Gaussian sigma in px, 0 to disable),
@@ -237,10 +237,11 @@ def make_toggle_viewer(brightfield_path, fitc_path, out_html="viewer.html",
         f"#r{i}:checked+label{{background:#2a7;border-color:#2a7}}" for i in range(len(views)))
     html = f"""<!doctype html><meta charset="utf-8"><title>Droplet viewer</title>
 <style>
-body{{background:#111;color:#eee;font:14px sans-serif;margin:12px}}
+body{{background:#444;color:#eee;font:14px sans-serif;margin:12px}}
 input{{position:absolute;opacity:0;pointer-events:none}}
 label{{display:inline-block;padding:6px 14px;margin-right:6px;background:#333;border:1px solid #666;cursor:pointer}}
 #imgs{{margin-top:10px}}
+.v{{border:2px solid #aaa}}
 .v{{display:none;width:min(95vw,90vh)}}
 {rules}
 </style>
