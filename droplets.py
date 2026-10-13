@@ -165,6 +165,22 @@ def analyze_droplets(image_path, min_radius=10, max_radius=80, tolerance=0.1,
     }
 
 
+def enhance_fitc(image_path, out_path="fitc_enhanced.png", low_pct=1, high_pct=99.8,
+                 gamma=0.6):
+    """Contrast-stretch a single-channel FITC TIFF and save it as a green image.
+
+    Intensities are clipped to the [low_pct, high_pct] percentiles, rescaled to
+    0-1, gamma-adjusted, and mapped to the green channel. Returns the RGB array.
+    """
+    img = np.squeeze(tifffile.imread(image_path)).astype(float)
+    lo, hi = np.percentile(img, [low_pct, high_pct])
+    img = np.clip((img - lo) / max(hi - lo, 1e-9), 0, 1) ** gamma
+    rgb = np.zeros(img.shape + (3,))
+    rgb[..., 1] = img
+    plt.imsave(out_path, rgb)
+    return rgb
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
