@@ -165,7 +165,7 @@ def analyze_droplets(image_path, min_radius=10, max_radius=80, tolerance=0.1,
     }
 
 
-def enhance_fitc(image_path, out_path="fitc_enhanced.png", low_pct=50, high_pct=99.5,
+def enhance_fitc(image_path, out_path="fitc_enhanced.tif", low_pct=50, high_pct=99.5,
                  gamma=0.5, smooth=0.7):
     """Contrast-stretch a single-channel FITC TIFF and save it as a green image.
 
@@ -181,22 +181,25 @@ def enhance_fitc(image_path, out_path="fitc_enhanced.png", low_pct=50, high_pct=
     img = np.clip((img - lo) / max(hi - lo, 1e-9), 0, 1) ** gamma
     rgb = np.zeros(img.shape + (3,))
     rgb[..., 1] = img
-    plt.imsave(out_path, rgb)
+    if os.path.splitext(out_path)[1].lower() in (".tif", ".tiff"):
+        tifffile.imwrite(out_path, (rgb * 255).round().astype(np.uint8), photometric="rgb")
+    else:
+        plt.imsave(out_path, rgb)
     return rgb
 
 
 def make_toggle_viewer(brightfield_path, fitc_path, out_html="viewer.html",
                        fitc_kwargs=None,
-                       bf_brightness=0.55, save_pngs=True):
+                       bf_brightness=0.55, save_tiffs=True):
     """Write a standalone HTML viewer that switches between three precomputed views:
     brightfield, the contrast-adjusted FITC image (see `enhance_fitc`), and an
     overlay of the two.
 
     Click a button to switch views. The views are rendered here in Python and the
     page is pure HTML/CSS (radio buttons), with no JavaScript, so it works in
-    sandboxed previews. With `save_pngs`, each view is also written next
-    to the HTML as <name>_<view>.png (the page itself embeds smaller
-    JPEG copies). Both images must have the same shape.
+    sandboxed previews. With `save_tiffs`, each view is also written next to the HTML as
+    <name>_<view>.tif, plus <name>_stack.tif (3 pages) for ImageJ/Fiji. Browsers
+    cannot display TIFF, so the page itself embeds PNG/JPEG copies. Both images must have the same shape.
     """
     import base64
     import io
@@ -206,7 +209,7 @@ def make_toggle_viewer(brightfield_path, fitc_path, out_html="viewer.html",
     bf = np.squeeze(tifffile.imread(brightfield_path)).astype(float)
     lo, hi = np.percentile(bf, [0.5, 99.5])
     bf = np.clip((bf - lo) / max(hi - lo, 1e-9), 0, 1)
-    tmp = os.path.splitext(out_html)[0] + "_tmp.png"
+    tmp = os.path.splitext(out_html)[0] + "_tmp.png"  # scratch file, removed below
     fl = enhance_fitc(fitc_path, tmp, **(fitc_kwargs or {}))
     os.remove(tmp)
     if bf.shape != fl.shape[:2]:
@@ -231,8 +234,14 @@ def make_toggle_viewer(brightfield_path, fitc_path, out_html="viewer.html",
             plt.imsave(buf, rgb, format="jpg", pil_kwargs={"quality": 90})
             mime = "jpeg"
         srcs.append(f"data:image/{mime};base64," + base64.b64encode(buf.getvalue()).decode())
-        if save_pngs:
-            plt.imsave(f"{base}_{name}.png", rgb)
+        if save_tiffs:
+            tifffile.imwrite(f"{base}_{name}.tif", (rgb * 255).round().astype(np.uint8),
+                             photometric="rgb")
+    if save_tiffs:
+        # Multi-page stack (brightfield, FITC, overlay) to flip through in ImageJ/Fiji.
+        tifffile.imwrite(f"{base}_stack.tif",
+                         np.stack([(v[2] * 255).round().astype(np.uint8) for v in views]),
+                         photometric="rgb", metadata={"Labels": [v[1] for v in views]})
 
     # Pure HTML/CSS toggle (radio buttons), so no JavaScript can fail in sandboxed previews.
     default = 2
