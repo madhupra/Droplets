@@ -201,6 +201,8 @@ def make_toggle_viewer(brightfield_path, fitc_path, out_html="viewer.html",
     import base64
     import io
 
+    from PIL import Image
+
     bf = np.squeeze(tifffile.imread(brightfield_path)).astype(float)
     lo, hi = np.percentile(bf, [0.5, 99.5])
     bf = np.clip((bf - lo) / max(hi - lo, 1e-9), 0, 1)
@@ -221,8 +223,14 @@ def make_toggle_viewer(brightfield_path, fitc_path, out_html="viewer.html",
     srcs = []
     for name, _, rgb in views:
         buf = io.BytesIO()
-        plt.imsave(buf, rgb, format="jpg", pil_kwargs={"quality": 90})
-        srcs.append("data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode())
+        if name == "fitc":
+            # Pure-green image: embed losslessly (some viewers mishandle it as JPEG).
+            Image.fromarray((rgb * 255).round().astype(np.uint8)).save(buf, "PNG")
+            mime = "png"
+        else:
+            plt.imsave(buf, rgb, format="jpg", pil_kwargs={"quality": 90})
+            mime = "jpeg"
+        srcs.append(f"data:image/{mime};base64," + base64.b64encode(buf.getvalue()).decode())
         if save_pngs:
             plt.imsave(f"{base}_{name}.png", rgb)
 
