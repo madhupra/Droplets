@@ -186,11 +186,11 @@ def enhance_fitc(image_path, out_path="fitc_enhanced.png", low_pct=50, high_pct=
 
 
 def make_toggle_viewer(brightfield_path, fitc_path, out_html="viewer.html",
-                       fitc_kwargs=None, overlay_floor_pct=97,
+                       fitc_kwargs=None,
                        bf_brightness=0.55, save_pngs=True):
-    """Write a standalone HTML viewer that switches between four precomputed views:
-    brightfield, the original FITC image, an overlay using the original FITC, and
-    an overlay using a background-subtracted (signal only) FITC.
+    """Write a standalone HTML viewer that switches between three precomputed views:
+    brightfield, the contrast-adjusted FITC image (see `enhance_fitc`), and an
+    overlay of the two.
 
     Click a button to switch views. The views are rendered here in Python and the
     page is pure HTML/CSS (radio buttons), with no JavaScript, so it works in
@@ -206,20 +206,15 @@ def make_toggle_viewer(brightfield_path, fitc_path, out_html="viewer.html",
     bf = np.clip((bf - lo) / max(hi - lo, 1e-9), 0, 1)
     tmp = os.path.splitext(out_html)[0] + "_tmp.png"
     fl = enhance_fitc(fitc_path, tmp, **(fitc_kwargs or {}))
-    kw = dict(fitc_kwargs or {})
-    kw.update(low_pct=overlay_floor_pct)  # background-subtracted copy
-    fl_sig = enhance_fitc(fitc_path, tmp, **kw)
     os.remove(tmp)
     if bf.shape != fl.shape[:2]:
         raise ValueError(f"Image shapes differ: {bf.shape} vs {fl.shape[:2]}")
     bf3 = np.dstack([bf] * 3)
     views = [
         ("brightfield", "1 Brightfield", bf3),
-        ("fitc", "2 FITC (original)", fl),
-        ("overlay_original", "3 Overlay: original FITC",
+        ("fitc", "2 FITC (contrast adjusted)", fl),
+        ("overlay", "3 Overlay: brightfield + FITC",
          np.clip(bf3 * bf_brightness + fl, 0, 1)),
-        ("overlay_signal", "4 Overlay: FITC signal only",
-         np.clip(bf3 * bf_brightness + fl_sig, 0, 1)),
     ]
 
     base = os.path.splitext(out_html)[0]
@@ -232,7 +227,7 @@ def make_toggle_viewer(brightfield_path, fitc_path, out_html="viewer.html",
             plt.imsave(f"{base}_{name}.png", rgb)
 
     # Pure HTML/CSS toggle (radio buttons), so no JavaScript can fail in sandboxed previews.
-    default = 3
+    default = 2
     radios = "".join(
         f'<input type="radio" name="view" id="r{i}"{" checked" if i == default else ""}>'
         f'<label for="r{i}">{label}</label>' for i, (_, label, _) in enumerate(views))
