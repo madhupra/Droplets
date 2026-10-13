@@ -188,9 +188,9 @@ def make_toggle_viewer(brightfield_path, fitc_path, out_html="viewer.html",
     brightfield, the original FITC image, an overlay using the original FITC, and
     an overlay using a background-subtracted (signal only) FITC.
 
-    Buttons or the keys 1-4 switch views; space flips brightfield/FITC. The views
-    are rendered here in Python, so the page needs no canvas or pixel access and
-    works in sandboxed previews. With `save_pngs`, each view is also written next
+    Click a button to switch views. The views are rendered here in Python and the
+    page is pure HTML/CSS (radio buttons), with no JavaScript, so it works in
+    sandboxed previews. With `save_pngs`, each view is also written next
     to the HTML as <name>_<view>.png (the page itself embeds smaller
     JPEG copies). Both images must have the same shape.
     """
@@ -227,30 +227,26 @@ def make_toggle_viewer(brightfield_path, fitc_path, out_html="viewer.html",
         if save_pngs:
             plt.imsave(f"{base}_{name}.png", rgb)
 
-    buttons = "".join(f'<button id="b{i}" onclick="show({i})">{label}</button>'
-                      for i, (_, label, _) in enumerate(views))
-    imgs = "".join(f'<img id="v{i}" src="{src}" style="display:none">'
-                   for i, src in enumerate(srcs))
+    # Pure HTML/CSS toggle (radio buttons), so no JavaScript can fail in sandboxed previews.
+    default = 3
+    radios = "".join(
+        f'<input type="radio" name="view" id="r{i}"{" checked" if i == default else ""}>'
+        f'<label for="r{i}">{label}</label>' for i, (_, label, _) in enumerate(views))
+    imgs = "".join(f'<img class="v" id="v{i}" src="{src}">' for i, src in enumerate(srcs))
+    rules = "".join(
+        f"#r{i}:checked~#imgs #v{i}{{display:block}}"
+        f"#r{i}:checked+label{{background:#2a7;border-color:#2a7}}" for i in range(len(views)))
     html = f"""<!doctype html><meta charset="utf-8"><title>Droplet viewer</title>
 <style>
 body{{background:#111;color:#eee;font:14px sans-serif;margin:12px}}
-button{{padding:6px 14px;margin-right:6px;background:#333;color:#eee;border:1px solid #666;cursor:pointer}}
-button.on{{background:#2a7;border-color:#2a7}}
-img{{width:min(95vw,90vh);margin-top:10px}}
+input{{position:absolute;opacity:0;pointer-events:none}}
+label{{display:inline-block;padding:6px 14px;margin-right:6px;background:#333;border:1px solid #666;cursor:pointer}}
+#imgs{{margin-top:10px}}
+.v{{display:none;width:min(95vw,90vh)}}
+{rules}
 </style>
-<div>{buttons} &nbsp; (keys 1-4; space = toggle brightfield/FITC)</div>
-<div>{imgs}</div>
-<script>
-var mode=3;
-function show(m){{mode=m;
- for(var i=0;i<4;i++){{
-  document.getElementById('v'+i).style.display=(i==m)?'block':'none';
-  document.getElementById('b'+i).className=(i==m)?'on':'';}}}}
-document.onkeydown=function(e){{
- if(e.key>='1'&&e.key<='4')show(+e.key-1);
- if(e.key==' '){{e.preventDefault();show(mode==0?1:0);}}}};
-show(3);
-</script>"""
+{radios}
+<div id="imgs">{imgs}</div>"""
     with open(out_html, "w") as f:
         f.write(html)
     return out_html
